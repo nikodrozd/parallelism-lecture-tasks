@@ -11,7 +11,11 @@ object RoboAdviser {
   // Task 1.
   // Return 'AAPL' revenue from `Db.getCompanyLastFinancials`. Possible error should be returned as a ServiceError.
   def getAAPLRevenue: Future[Double] = Db.getCompanyLastFinancials("AAPL").transform {
-    case Success(value) => Success(value.map(_.revenue.toDouble).getOrElse(0.0))
+    case Success(value) =>
+      value.map(_.revenue.toDouble) match {
+        case Some(value) => Success(value)
+        case None => Failure(DbError)
+      }
     case Failure(_) => Failure(DbError)
   }
 
@@ -53,14 +57,7 @@ object RoboAdviser {
 
   // Task 5.
   // Using retryable functions return all tickers with their real time prices.
-  def getAllTickersPrices: Future[Seq[(String, Double)]] = {
-    val tickers: Future[Seq[String]] = getAllTickersRetryable()
-    val prices: Future[Seq[Double]] = tickers.flatMap(x => Future.sequence(x.map(getPriceRetryable(_))))
-    for {
-      ticker <- tickers
-      price <- prices
-    } yield ticker zip price
-  }
+  def getAllTickersPrices: Future[Seq[(String, Double)]] = getAllTickersRetryable().flatMap(x => Future.sequence(x.map(d => getPriceRetryable(d).map((d, _)))))
 
   // Task 6.
   // Using `getCompanyRetryable` and `getPriceRetryable` functions return a company with its real time stock price.
@@ -77,20 +74,16 @@ object RoboAdviser {
   def buyList: Future[Seq[(Company, Double)]] = for {
     tickerSeq <- getAllTickersRetryable()
     result <- Future.sequence(tickerSeq.map(getCompanyFinancialsWithPrice))
-  } yield result.filter(x => x._1.isCheap(x._2))
+  } yield result.filter{ case (company, price) => company.isCheap(price) }
 
   // Task 8.
   // Implement a function that returns a list of expensive ('Company.isExpensive') companies
   // with their real time stock prices using 'getAllTickersRetryable', 'getCompanyRetryable',
   // 'getPriceRetryable' and zipping.
   def sellList: Future[Seq[(Company, Double)]] = {
-    val tickers: Future[Seq[String]] = getAllTickersRetryable()
-    val companies: Future[Seq[Option[Company]]] = tickers.flatMap(x => Future.sequence(x.map(getCompanyRetryable(_))))
-    val prices: Future[Seq[Double]] = tickers.flatMap(x => Future.sequence(x.map(getPriceRetryable(_))))
-    for {
-      price: Seq[Double] <- prices
-      company: Seq[Option[Company]] <- companies
-    } yield (company.flatten zip price).filter(x => x._1.isExpensive(x._2))
+    val companies: Future[Seq[Future[Company]]] = getAllTickersRetryable().map(_.map(getCompanyRetryable(_).map{ case Some(company) => company }))
+    val resultNotFiltered: Future[Seq[(Company, Double)]] = companies.flatMap(res => Future.sequence(res.map(companyFut => companyFut zip companyFut.flatMap(company => getPriceRetryable(company.ticker)))))
+    resultNotFiltered.map(_.filter{case (company, price) => company.isExpensive(price)})
   }
 
 }
