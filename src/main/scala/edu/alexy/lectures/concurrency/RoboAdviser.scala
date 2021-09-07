@@ -11,12 +11,8 @@ object RoboAdviser {
   // Task 1.
   // Return 'AAPL' revenue from `Db.getCompanyLastFinancials`. Possible error should be returned as a ServiceError.
   def getAAPLRevenue: Future[Double] = Db.getCompanyLastFinancials("AAPL").transform {
-    case Success(value) =>
-      value.map(_.revenue.toDouble) match {
-        case Some(value) => Success(value)
-        case None => Failure(DbError)
-      }
-    case Failure(_) => Failure(DbError)
+    case Success(Some(value)) => Success(value.revenue)
+    case _ => Failure(DbError)
   }
 
   // Task 2.
@@ -57,7 +53,7 @@ object RoboAdviser {
 
   // Task 5.
   // Using retryable functions return all tickers with their real time prices.
-  def getAllTickersPrices: Future[Seq[(String, Double)]] = getAllTickersRetryable().flatMap(x => Future.sequence(x.map(d => getPriceRetryable(d).map((d, _)))))
+  def getAllTickersPrices: Future[Seq[(String, Double)]] = getAllTickersRetryable().flatMap(tickerSeq => Future.sequence(tickerSeq.map(ticker => getPriceRetryable(ticker).map((ticker, _)))))
 
   // Task 6.
   // Using `getCompanyRetryable` and `getPriceRetryable` functions return a company with its real time stock price.
@@ -81,9 +77,13 @@ object RoboAdviser {
   // with their real time stock prices using 'getAllTickersRetryable', 'getCompanyRetryable',
   // 'getPriceRetryable' and zipping.
   def sellList: Future[Seq[(Company, Double)]] = {
-    val companies: Future[Seq[Future[Company]]] = getAllTickersRetryable().map(_.map(getCompanyRetryable(_).map{ case Some(company) => company }))
-    val resultNotFiltered: Future[Seq[(Company, Double)]] = companies.flatMap(res => Future.sequence(res.map(companyFut => companyFut zip companyFut.flatMap(company => getPriceRetryable(company.ticker)))))
-    resultNotFiltered.map(_.filter{case (company, price) => company.isExpensive(price)})
+    def getEntitiesByFuncRetriable[A] (f: (String, Int) => Future[A], retries: Int = 10): Future[Seq[A]] =
+      getAllTickersRetryable().flatMap(tickerSeq => Future.sequence(tickerSeq.map(f(_, retries))))
+
+    val companies: Future[Seq[Option[Company]]] = getEntitiesByFuncRetriable(getCompanyRetryable)
+    val prices: Future[Seq[Double]] = getEntitiesByFuncRetriable(getPriceRetryable)
+    val resultNotFiltered = companies.zip(prices).map{case (companySeq, priceSeq) => companySeq zip priceSeq}
+    resultNotFiltered.map(_ collect {case (Some(company), price) if company.isExpensive(price) => (company, price)})
   }
 
 }
